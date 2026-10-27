@@ -6,6 +6,7 @@ import java.util.Collections;
 import java.util.List;
 import javax.inject.Inject;
 import net.runelite.api.Client;
+import net.runelite.api.VarPlayer;
 import net.runelite.api.gameval.DBTableID;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.VarbitID;
@@ -140,6 +141,19 @@ final class MortimerOffers
 		return isCurrent(snapshot) ? new Rectangle(snapshot.content.getBounds()) : null;
 	}
 
+	String currentTaskKey()
+	{
+		if (client.getVarbitValue(VarbitID.SLAYER_MASTER) != MORTIMER_MASTER_ID
+			|| client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE) <= 0)
+		{
+			return null;
+		}
+
+		String taskId = TaskCatalog.taskIdForName(taskName(client.getVarpValue(VarPlayer.SLAYER_TASK_CREATURE)));
+		String modifier = modifierId(client.getVarbitValue(VarbitID.SLAYER_MODIFIER_ID));
+		return taskId == null || modifier == null ? null : taskId + Character.toString('/') + modifier;
+	}
+
 	private Widget content()
 	{
 		Widget content = client.getWidget(InterfaceID.SlayerTaskChoice.CONTENT);
@@ -272,3 +286,4 @@ final class MortimerOffers
 		}
 	}
 }
+
