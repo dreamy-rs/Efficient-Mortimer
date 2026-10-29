@@ -3,17 +3,27 @@ package com.efficientmortimer;
 import com.google.gson.Gson;
 import com.google.inject.Guice;
 import java.util.ArrayDeque;
+import java.awt.image.BufferedImage;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Queue;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
+import net.runelite.api.Item;
+import net.runelite.api.ItemContainer;
+import net.runelite.api.MenuAction;
+import net.runelite.api.VarPlayer;
 import net.runelite.api.events.ClientTick;
+import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
+import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.VarbitChanged;
 import net.runelite.api.gameval.DBTableID;
 import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.gameval.InventoryID;
+import net.runelite.api.gameval.ItemID;
+import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetType;
@@ -22,14 +32,20 @@ import net.runelite.client.config.ConfigManager;
 import net.runelite.client.config.ConfigProfile;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.events.ProfileChanged;
+import net.runelite.client.game.ItemManager;
+import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.ui.overlay.OverlayManager;
+import net.runelite.client.ui.overlay.infobox.InfoBoxManager;
+import net.runelite.client.util.AsyncBufferedImage;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -49,7 +65,10 @@ public class PluginLifecycleTest
 	private final ClientThread clientThread = mock(ClientThread.class);
 	private final ConfigManager configManager = mock(ConfigManager.class);
 	private final EfficientMortimerConfig config = mock(EfficientMortimerConfig.class);
+	private final PluginManager pluginManager = mock(PluginManager.class);
 	private final OverlayManager overlayManager = mock(OverlayManager.class);
+	private final InfoBoxManager infoBoxManager = mock(InfoBoxManager.class);
+	private final ItemManager itemManager = mock(ItemManager.class);
 	private final EfficientMortimerPlugin plugin = new EfficientMortimerPlugin();
 	private final Queue<Runnable> pending = new ArrayDeque<>();
 	private final Map<Long, Map<String, String>> profiles = new HashMap<>();
@@ -64,6 +83,11 @@ public class PluginLifecycleTest
 		when(configManager.getProfile()).thenReturn(profile);
 		when(config.listMode()).thenReturn(ListMode.CUSTOM);
 		when(config.customList()).thenAnswer(call -> settings().getOrDefault("customList", ""));
+		when(config.showBraceletBankHighlights()).thenReturn(true);
+		when(config.showRepeatInfoBox()).thenReturn(true);
+		when(itemManager.getImage(ItemID.SKILLCAPE_SLAYER)).thenReturn(new AsyncBufferedImage(
+			clientThread, 36, 32, BufferedImage.TYPE_INT_ARGB));
+		when(pluginManager.getPlugins()).thenReturn(Collections.emptyList());
 		doAnswer(call -> {
 			pending.add(call.getArgument(0));
 			return null;
@@ -74,8 +98,11 @@ public class PluginLifecycleTest
 			binder.bind(ClientThread.class).toInstance(clientThread);
 			binder.bind(ConfigManager.class).toInstance(configManager);
 			binder.bind(EfficientMortimerConfig.class).toInstance(config);
+			binder.bind(PluginManager.class).toInstance(pluginManager);
 			binder.bind(Gson.class).toInstance(new Gson());
 			binder.bind(OverlayManager.class).toInstance(overlayManager);
+			binder.bind(InfoBoxManager.class).toInstance(infoBoxManager);
+			binder.bind(ItemManager.class).toInstance(itemManager);
 			binder.bind(EfficientMortimerPlugin.class).toInstance(plugin);
 		});
 
@@ -286,6 +313,172 @@ public class PluginLifecycleTest
 		assertAction(Recommendation.Action.SKIP);
 	}
 
+	@Test
+	public void repeatAndBraceletFeaturesRequireSlayerActivityAndRespectRepeatToggle()
+	{
+		settings().put("customList", exportWithRepeatAndBraceletConditions());
+		start();
+		assertFalse(plugin.isRepeatInfoBoxActive());
+		assertFalse(plugin.isExpeditiousHighlightActive());
+
+		setMortimerSlayerTask(20);
+		assertEquals(10, client.getVarbitValue(VarbitID.SLAYER_MASTER));
+		assertEquals(20, client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE));
+		assertEquals(11, client.getVarpValue(VarPlayer.SLAYER_TASK_CREATURE));
+		assertEquals("abyssal-demon/points", new MortimerOffers(client).currentTaskKey());
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+		assertTrue(plugin.isRepeatInfoBoxActive());
+		assertTrue(plugin.isExpeditiousHighlightActive());
+
+		when(config.showRepeatInfoBox()).thenReturn(false);
+		ConfigChanged event = configChanged();
+		event.setKey("showRepeatInfoBox");
+		plugin.onConfigChanged(event);
+		drain();
+		plugin.onClientTick(new ClientTick());
+		assertFalse(plugin.isRepeatInfoBoxActive());
+		assertTrue(plugin.isExpeditiousHighlightActive());
+
+		variables.put(VarPlayerID.SLAYER_COUNT, 0);
+		when(client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE)).thenReturn(0);
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+		assertFalse(plugin.isExpeditiousHighlightActive());
+	}
+
+	@Test
+	public void existingTaskAtLaunchDoesNotActivateRepeatUntilTaskProgresses()
+	{
+		settings().put("customList", exportWithRepeatAndBraceletConditions());
+		setMortimerSlayerTask(20);
+		ItemContainer equipment = mock(ItemContainer.class);
+		when(equipment.getItems()).thenReturn(new Item[]{new Item(ItemID.SLAYER_HELM_I_HYDRA, 1)});
+		when(client.getItemContainer(InventoryID.WORN)).thenReturn(equipment);
+
+		start();
+
+		assertFalse(plugin.isRepeatInfoBoxActive());
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+		assertFalse(plugin.isRepeatInfoBoxActive());
+
+		variables.put(VarPlayerID.SLAYER_COUNT, 19);
+		when(client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE)).thenReturn(19);
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+
+		assertTrue(plugin.isRepeatInfoBoxActive());
+		variables.put(VarbitID.SLAYER_MASTER, 0);
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+		assertTrue(plugin.isRepeatInfoBoxActive());
+		when(client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE)).thenReturn(0);
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+		assertTrue(plugin.isRepeatInfoBoxActive());
+		when(client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE)).thenReturn(19);
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+		assertTrue(plugin.isRepeatInfoBoxActive());
+
+		variables.put(VarPlayerID.SLAYER_COUNT, 0);
+		when(client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE)).thenReturn(0);
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+		assertTrue(plugin.isRepeatInfoBoxActive());
+
+		variables.put(VarPlayerID.SLAYER_COUNT, 10);
+		when(client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE)).thenReturn(10);
+		when(client.getVarpValue(VarPlayer.SLAYER_TASK_CREATURE)).thenReturn(22);
+		variables.put(VarbitID.SLAYER_MASTER, 10);
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+		assertFalse(plugin.isRepeatInfoBoxActive());
+	}
+
+	@Test
+	public void checkingSlayerItemActivatesRepeatForExistingMortimerTask()
+	{
+		settings().put("customList", exportWithRepeatAndBraceletConditions());
+		setMortimerSlayerTask(20);
+		start();
+		assertFalse(plugin.isRepeatInfoBoxActive());
+
+		Widget checkedItem = mock(Widget.class);
+		when(checkedItem.getItemId()).thenReturn(ItemID.SLAYER_GEM);
+		when(checkedItem.getDynamicChildren()).thenReturn(new Widget[0]);
+		when(client.getWidget(1)).thenReturn(checkedItem);
+		MenuOptionClicked event = mock(MenuOptionClicked.class);
+		when(event.getMenuAction()).thenReturn(MenuAction.CC_OP);
+		when(event.getMenuOption()).thenReturn("Check");
+		when(event.getParam0()).thenReturn(-1);
+		when(event.getParam1()).thenReturn(1);
+
+		plugin.onMenuOptionClicked(event);
+		plugin.onClientTick(new ClientTick());
+
+		assertTrue(plugin.isRepeatInfoBoxActive());
+	}
+
+	@Test
+	public void taskCompletionActivatesRepeatForTheNextAssignment()
+	{
+		settings().put("customList", exportWithRepeatAndBraceletConditions());
+		setMortimerSlayerTask(1);
+		start();
+		assertFalse(plugin.isRepeatInfoBoxActive());
+
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+		variables.put(VarPlayerID.SLAYER_COUNT, 0);
+		when(client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE)).thenReturn(0);
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+
+		assertTrue(plugin.isRepeatInfoBoxActive());
+	}
+
+	@Test
+	public void repeatInfoBoxSurvivesTransientLoadingWhenLeavingTaskArea()
+	{
+		settings().put("customList", exportWithRepeatAndBraceletConditions());
+		setMortimerSlayerTask(20);
+		start();
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+		variables.put(VarPlayerID.SLAYER_COUNT, 19);
+		when(client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE)).thenReturn(19);
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+		assertTrue(plugin.isRepeatInfoBoxActive());
+
+		when(client.getGameState()).thenReturn(GameState.LOADING);
+		GameStateChanged loading = mock(GameStateChanged.class);
+		when(loading.getGameState()).thenReturn(GameState.LOADING);
+		plugin.onGameStateChanged(loading);
+		plugin.onClientTick(new ClientTick());
+		assertTrue(plugin.isRepeatInfoBoxActive());
+
+		when(client.getGameState()).thenReturn(GameState.LOGGED_IN);
+		GameStateChanged loggedIn = mock(GameStateChanged.class);
+		when(loggedIn.getGameState()).thenReturn(GameState.LOGGED_IN);
+		plugin.onGameStateChanged(loggedIn);
+		plugin.onClientTick(new ClientTick());
+		assertTrue(plugin.isRepeatInfoBoxActive());
+	}
+
+	@Test
+	public void slayerActivityRecognizesSlayerHelmVariations()
+	{
+		ItemContainer equipment = mock(ItemContainer.class);
+		Item hydraSlayerHelm = new Item(ItemID.SLAYER_HELM_I_HYDRA, 1);
+		when(equipment.getItems()).thenReturn(new Item[]{hydraSlayerHelm});
+		when(client.getItemContainer(InventoryID.WORN)).thenReturn(equipment);
+
+		assertTrue(plugin.hasSlayerActivity());
+	}
+
 	private void selectMode(ListMode mode)
 	{
 		when(config.listMode()).thenReturn(mode);
@@ -323,6 +516,15 @@ public class PluginLifecycleTest
 		assertEquals(expected, plugin.getDisplayState().recommendation.getAction());
 	}
 
+	private void setMortimerSlayerTask(int amount)
+	{
+		variables.put(VarPlayerID.SLAYER_COUNT, amount);
+		when(client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE)).thenReturn(amount);
+		when(client.getVarpValue(VarPlayer.SLAYER_TASK_CREATURE)).thenReturn(11);
+		variables.put(VarbitID.SLAYER_MASTER, 10);
+		variables.put(VarbitID.SLAYER_MODIFIER_ID, 1);
+	}
+
 	private void offer(Widget[] children, int child, int id, String name, int taskVarbit, int modifierVarbit, int valueVarbit)
 	{
 		variables.put(taskVarbit, id);
@@ -358,4 +560,14 @@ public class PluginLifecycleTest
 		return "{\"type\":\"efficient-mortimer\",\"version\":1,\"acceptedCount\":" + acceptedCount
 			+ ",\"ranking\":[\"abyssal-demon/points\",\"gargoyle/points\"]}";
 	}
+
+	private static String exportWithRepeatAndBraceletConditions()
+	{
+		return export(1).replace("\"version\":1",
+			"\"version\":2,\"repeat\":[\"abyssal-demon/points\"],"
+				+ "\"expeditious\":[\"abyssal-demon/points\"],\"slaughter\":[]");
+	}
 }
+
+
+

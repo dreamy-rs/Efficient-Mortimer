@@ -11,19 +11,28 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.math.BigDecimal;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 final class TaskRanking
 {
 	static final int SKIP_COST = 100;
 	private static final int MAX_IMPORT_LENGTH = 16_384;
 	private final Map<String, Integer> ranks;
+	private final Set<String> repeatKeys;
+	private final Set<String> expeditiousKeys;
+	private final Set<String> slaughterKeys;
 	private final int acceptedCount;
 
-	private TaskRanking(Map<String, Integer> ranks, int acceptedCount)
+	private TaskRanking(Map<String, Integer> ranks, Set<String> repeatKeys,
+		Set<String> expeditiousKeys, Set<String> slaughterKeys, int acceptedCount)
 	{
 		this.ranks = Map.copyOf(ranks);
+		this.repeatKeys = Set.copyOf(repeatKeys);
+		this.expeditiousKeys = Set.copyOf(expeditiousKeys);
+		this.slaughterKeys = Set.copyOf(slaughterKeys);
 		this.acceptedCount = acceptedCount;
 	}
 
@@ -56,10 +65,13 @@ final class TaskRanking
 		{
 			throw new IllegalArgumentException("This is not an Efficient Mortimer export.");
 		}
-		if (integerValue(data.get("version"), "Version") != 1)
+
+		int version = integerValue(data.get("version"), "Version");
+		if (version < 1 || version > 2)
 		{
 			throw new IllegalArgumentException("Unsupported export version. Update Efficient Mortimer.");
 		}
+
 		int acceptedCount = integerValue(data.get("acceptedCount"), "Accepted count");
 		JsonElement ranking = data.get("ranking");
 		if (ranking == null || !ranking.isJsonArray())
@@ -89,7 +101,15 @@ final class TaskRanking
 				throw new IllegalArgumentException("Duplicate task and modifier at entry " + (i + 1) + ".");
 			}
 		}
-		return new TaskRanking(ranks, acceptedCount);
+
+		Set<String> repeatKeys = parseKeySet(data.get("repeat"), "Repeat list", "repeat task");
+		Set<String> expeditiousKeys = parseKeySet(data.get("expeditious"), "Expeditious list", "expeditious task");
+		Set<String> slaughterKeys = parseKeySet(data.get("slaughter"), "Slaughter list", "slaughter task");
+		validateKeysInRanking(ranks, repeatKeys, "Repeat list");
+		validateKeysInRanking(ranks, expeditiousKeys, "Expeditious list");
+		validateKeysInRanking(ranks, slaughterKeys, "Slaughter list");
+
+		return new TaskRanking(ranks, repeatKeys, expeditiousKeys, slaughterKeys, acceptedCount);
 	}
 
 	int getSize()
@@ -100,6 +120,21 @@ final class TaskRanking
 	int getAcceptedCount()
 	{
 		return acceptedCount;
+	}
+
+	boolean isRepeatKey(String key)
+	{
+		return key != null && repeatKeys.contains(key);
+	}
+
+	boolean isExpeditiousKey(String key)
+	{
+		return key != null && expeditiousKeys.contains(key);
+	}
+
+	boolean isSlaughterKey(String key)
+	{
+		return key != null && slaughterKeys.contains(key);
 	}
 
 	Recommendation recommend(List<String> offerKeys, int points)
@@ -134,6 +169,42 @@ final class TaskRanking
 		}
 		return new Recommendation(points >= SKIP_COST ? Recommendation.Action.SKIP : Recommendation.Action.TAKE,
 			bestSlot);
+	}
+
+	private static Set<String> parseKeySet(JsonElement value, String listName, String keyName)
+	{
+		if (value == null)
+		{
+			return Set.of();
+		}
+		if (!value.isJsonArray())
+		{
+			throw new IllegalArgumentException(listName + " must be an array.");
+		}
+
+		JsonArray array = value.getAsJsonArray();
+		Set<String> keys = new HashSet<>();
+		for (int i = 0; i < array.size(); i++)
+		{
+			String key = stringValue(array.get(i));
+			if (!TaskCatalog.isValidKey(key))
+			{
+				throw new IllegalArgumentException("Unknown " + keyName + " at entry " + (i + 1) + ".");
+			}
+			if (!keys.add(key))
+			{
+				throw new IllegalArgumentException("Duplicate " + keyName + " at entry " + (i + 1) + ".");
+			}
+		}
+		return keys;
+	}
+
+	private static void validateKeysInRanking(Map<String, Integer> ranks, Set<String> keys, String listName)
+	{
+		if (!ranks.keySet().containsAll(keys))
+		{
+			throw new IllegalArgumentException(listName + " contains entries missing from ranking.");
+		}
 	}
 
 	private static String stringValue(JsonElement value)

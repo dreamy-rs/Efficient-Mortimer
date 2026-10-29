@@ -134,7 +134,7 @@ public class TaskRankingTest
 	public void rejectsWrongExportTypeAndVersion()
 	{
 		assertInvalid(export(1).replace("efficient-mortimer", "other-plugin"), "not an Efficient Mortimer");
-		assertInvalid(export(1).replace("\"version\":1", "\"version\":2"), "Unsupported export version");
+		assertInvalid(export(1).replace("\"version\":1", "\"version\":3"), "Unsupported export version");
 		assertInvalid(export(1).replace("\"version\":1", "\"version\":\"1\""), "whole number");
 		assertInvalid(export(1).replace("\"version\":1", "\"version\":1.5"), "whole number");
 	}
@@ -171,6 +171,65 @@ public class TaskRankingTest
 			+ ("\"" + FIRST + "\",").repeat(145) + "\"" + FIRST + "\"]}";
 		assertInvalid(oversized, "1 to 145");
 		assertInvalid(" ".repeat(16_385) + export(1), "too long");
+	}
+	@Test
+	public void supportsRepeatListInVersionOneAndTwo()
+	{
+		TaskRanking v1 = TaskRanking.parse(GSON,
+			export(1).replace("\"version\":1", "\"version\":1,\"repeat\":[\"" + FIRST + "\"]"));
+		assertTrue(v1.isRepeatKey(FIRST));
+		assertTrue(!v1.isRepeatKey(SECOND));
+
+		TaskRanking v2 = TaskRanking.parse(GSON,
+			export(1).replace("\"version\":1", "\"version\":2,\"repeat\":[\"" + SECOND + "\"]"));
+		assertTrue(v2.isRepeatKey(SECOND));
+		assertTrue(!v2.isRepeatKey(FIRST));
+	}
+
+	@Test
+	public void rejectsInvalidRepeatEntries()
+	{
+		assertInvalid(export(1).replace("\"version\":1", "\"version\":2,\"repeat\":\"" + FIRST + "\""),
+			"Repeat list must be an array");
+		assertInvalid(export(1).replace("\"version\":1", "\"version\":2,\"repeat\":[\"other-task/xp\"]"),
+			"Unknown repeat task");
+		assertInvalid(export(1).replace("\"version\":1", "\"version\":2,\"repeat\":[\"" + FIRST + "\",\"" + FIRST + "\"]"),
+			"Duplicate repeat task");
+		assertInvalid(export(1).replace("\"version\":1", "\"version\":2,\"repeat\":[\"venator/quantity\"]"),
+			"missing from ranking");
+	}
+	@Test
+	public void supportsExpeditiousAndSlaughterLists()
+	{
+		TaskRanking ranking = TaskRanking.parse(GSON,
+			export(1).replace("\"version\":1",
+				"\"version\":2,\"expeditious\":[\"" + FIRST + "\"],\"slaughter\":[\"" + SECOND + "\"]"));
+		assertTrue(ranking.isExpeditiousKey(FIRST));
+		assertTrue(!ranking.isExpeditiousKey(SECOND));
+		assertTrue(ranking.isSlaughterKey(SECOND));
+		assertTrue(!ranking.isSlaughterKey(FIRST));
+	}
+
+	@Test
+	public void rejectsInvalidExpeditiousAndSlaughterEntries()
+	{
+		assertInvalid(export(1).replace("\"version\":1", "\"version\":2,\"expeditious\":\"" + FIRST + "\""),
+			"Expeditious list must be an array");
+		assertInvalid(export(1).replace("\"version\":1", "\"version\":2,\"expeditious\":[\"other-task/xp\"]"),
+			"Unknown expeditious task");
+		assertInvalid(export(1).replace("\"version\":1", "\"version\":2,\"expeditious\":[\"" + FIRST + "\",\"" + FIRST + "\"]"),
+			"Duplicate expeditious task");
+		assertInvalid(export(1).replace("\"version\":1", "\"version\":2,\"expeditious\":[\"venator/quantity\"]"),
+			"Expeditious list contains entries missing from ranking");
+
+		assertInvalid(export(1).replace("\"version\":1", "\"version\":2,\"slaughter\":\"" + FIRST + "\""),
+			"Slaughter list must be an array");
+		assertInvalid(export(1).replace("\"version\":1", "\"version\":2,\"slaughter\":[\"other-task/xp\"]"),
+			"Unknown slaughter task");
+		assertInvalid(export(1).replace("\"version\":1", "\"version\":2,\"slaughter\":[\"" + FIRST + "\",\"" + FIRST + "\"]"),
+			"Duplicate slaughter task");
+		assertInvalid(export(1).replace("\"version\":1", "\"version\":2,\"slaughter\":[\"venator/quantity\"]"),
+			"Slaughter list contains entries missing from ranking");
 	}
 
 	@Test
@@ -219,3 +278,7 @@ public class TaskRankingTest
 		assertTrue(error.getMessage(), error.getMessage().contains(message));
 	}
 }
+
+
+
+
