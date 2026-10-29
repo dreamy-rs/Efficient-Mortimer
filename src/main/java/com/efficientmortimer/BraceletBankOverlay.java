@@ -5,20 +5,14 @@ import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
 import java.awt.Rectangle;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.util.Collection;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
 import javax.inject.Inject;
 import net.runelite.api.Client;
 import net.runelite.api.ItemComposition;
-import net.runelite.api.Point;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
-import net.runelite.client.plugins.Plugin;
-import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.ui.overlay.Overlay;
 import net.runelite.client.ui.overlay.OverlayLayer;
 import net.runelite.client.ui.overlay.OverlayPosition;
@@ -32,20 +26,15 @@ final class BraceletBankOverlay extends Overlay
 	private static final String SLAUGHTER_NAME = "bracelet of slaughter";
 	private static final int HIGHLIGHT_X_OFFSET = -6;
 	private static final int HIGHLIGHT_Y_OFFSET = -1;
-	private static final int BANK_ITEM_WIDTH = 36;
-	private static final int BANK_ITEM_HEIGHT = 32;
-	private static final String BANK_TAG_LAYOUTS_PLUGIN = "com.banktaglayouts.BankTagLayoutsPlugin";
 
 	private final Client client;
 	private final EfficientMortimerPlugin plugin;
-	private final PluginManager pluginManager;
 
 	@Inject
-	BraceletBankOverlay(Client client, EfficientMortimerPlugin plugin, PluginManager pluginManager)
+	BraceletBankOverlay(Client client, EfficientMortimerPlugin plugin)
 	{
 		this.client = client;
 		this.plugin = plugin;
-		this.pluginManager = pluginManager;
 		setPosition(OverlayPosition.DYNAMIC);
 		setLayer(OverlayLayer.ABOVE_WIDGETS);
 		drawAfterLayer(InterfaceID.Bankmain.ITEMS);
@@ -68,122 +57,7 @@ final class BraceletBankOverlay extends Overlay
 		renderContainer(graphics, client.getWidget(InterfaceID.BANKMAIN));
 		renderContainer(graphics, client.getWidget(InterfaceID.BANKSIDE));
 		renderContainer(graphics, client.getWidget(InterfaceID.BANK_DEPOSITBOX));
-		renderBankTagLayoutItems(graphics);
 		return null;
-	}
-
-	private void renderBankTagLayoutItems(Graphics2D graphics)
-	{
-		Widget container = client.getWidget(InterfaceID.Bankmain.ITEMS);
-		if (container == null || container.isHidden())
-		{
-			return;
-		}
-
-		Plugin bankTagLayouts = findBankTagLayoutsPlugin();
-		if (bankTagLayouts == null)
-		{
-			return;
-		}
-
-		try
-		{
-			Method getCurrentLayoutableThing = bankTagLayouts.getClass().getDeclaredMethod("getCurrentLayoutableThing");
-			getCurrentLayoutableThing.setAccessible(true);
-			Object currentLayoutableThing = getCurrentLayoutableThing.invoke(bankTagLayouts);
-			if (currentLayoutableThing == null)
-			{
-				return;
-			}
-
-			Method getBankOrder = bankTagLayouts.getClass().getDeclaredMethod("getBankOrder", currentLayoutableThing.getClass());
-			getBankOrder.setAccessible(true);
-			if (getBankOrder.invoke(bankTagLayouts, currentLayoutableThing) == null)
-			{
-				return;
-			}
-
-			Field fakeItemsField = bankTagLayouts.getClass().getField("fakeItems");
-			Collection<?> fakeItems = (Collection<?>) fakeItemsField.get(bankTagLayouts);
-			if (fakeItems == null || fakeItems.isEmpty())
-			{
-				return;
-			}
-
-			Method getItemId = fakeItems.iterator().next().getClass().getMethod("getItemId");
-			Method getIndex = fakeItems.iterator().next().getClass().getMethod("getIndex");
-			Method isLayoutPlaceholder = fakeItems.iterator().next().getClass().getMethod("isLayoutPlaceholder");
-			Method getXForIndex = bankTagLayouts.getClass().getDeclaredMethod("getXForIndex", int.class);
-			Method getYForIndex = bankTagLayouts.getClass().getDeclaredMethod("getYForIndex", int.class);
-			Field configField = bankTagLayouts.getClass().getDeclaredField("config");
-			configField.setAccessible(true);
-			Object bankTagLayoutsConfig = configField.get(bankTagLayouts);
-			Method showLayoutPlaceholders = bankTagLayoutsConfig.getClass().getMethod("showLayoutPlaceholders");
-			getXForIndex.setAccessible(true);
-			getYForIndex.setAccessible(true);
-
-			Point canvasLocation = container.getCanvasLocation();
-			int relativeY = 0;
-			for (Widget current = container; current.getParent() != null; current = current.getParent())
-			{
-				relativeY += current.getRelativeY();
-			}
-
-			Rectangle clip = new Rectangle(canvasLocation.getX() + 45, relativeY,
-				container.getWidth() - 45, container.getHeight());
-			Graphics2D clippedGraphics = (Graphics2D) graphics.create();
-			try
-			{
-				clippedGraphics.clip(clip);
-				for (Object fakeItem : fakeItems)
-				{
-					if ((boolean) isLayoutPlaceholder.invoke(fakeItem)
-						&& !(boolean) showLayoutPlaceholders.invoke(bankTagLayoutsConfig))
-					{
-						continue;
-					}
-
-					int itemId = ((Number) getItemId.invoke(fakeItem)).intValue();
-					if (!isBraceletHighlightActive(itemId))
-					{
-						continue;
-					}
-
-					int index = ((Number) getIndex.invoke(fakeItem)).intValue();
-					int x = canvasLocation.getX() + ((Number) getXForIndex.invoke(null, index)).intValue();
-					int y = relativeY - container.getScrollY()
-						+ ((Number) getYForIndex.invoke(null, index)).intValue();
-					drawBounds(clippedGraphics, new Rectangle(x, y, BANK_ITEM_WIDTH, BANK_ITEM_HEIGHT));
-				}
-			}
-			finally
-			{
-				clippedGraphics.dispose();
-			}
-		}
-		catch (ReflectiveOperationException | ClassCastException e)
-		{
-			return;
-		}
-	}
-
-	private Plugin findBankTagLayoutsPlugin()
-	{
-		for (Plugin candidate : pluginManager.getPlugins())
-		{
-			if (BANK_TAG_LAYOUTS_PLUGIN.equals(candidate.getClass().getName()))
-			{
-				return candidate;
-			}
-		}
-
-		return null;
-	}
-
-	private boolean isBraceletHighlightActive(int itemId)
-	{
-		return (plugin.isExpeditiousHighlightActive() && itemNameStartsWith(itemId, EXPEDITIOUS_NAME))
-			|| (plugin.isSlaughterHighlightActive() && itemNameStartsWith(itemId, SLAUGHTER_NAME));
 	}
 
 	private void renderContainer(Graphics2D graphics, Widget container)
