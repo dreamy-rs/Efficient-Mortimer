@@ -11,7 +11,6 @@ import net.runelite.api.GameState;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.MenuAction;
-import net.runelite.api.VarPlayer;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameStateChanged;
@@ -80,12 +79,20 @@ public class EfficientMortimerPlugin extends Plugin {
 	private boolean slayerTaskActivityObserved;
 	private boolean braceletTaskActivityObserved;
 	private boolean loadingTransition;
+	private boolean taskAssignmentActivitySuppressed;
+	private boolean taskStateRefreshPending;
+	private int taskStateRefreshQuietTicks;
+	private String taskChoiceStateAtOpen;
+	private String pendingTaskChoiceState;
+	private String lastObservedSlayerTaskState;
+	private String lastObservedSlayerTaskIdentity;
+	private int pendingTaskChoiceTicks;
 	private long lastBraceletTaskActivityNanos;
 	private boolean slayerTaskStateInitialized;
 	private String lastMortimerTaskKey;
 	private int previousSlayerCount;
-	private int previousSlayerTaskSize;
-	private int previousSlayerTaskCreature;
+	private int previousSlayerTaskOriginalCount;
+	private int previousSlayerTaskTarget;
 	private int previousSlayerMaster;
 	private int previousSlayerModifier;
 	private boolean expeditiousHighlightActive;
@@ -99,13 +106,20 @@ public class EfficientMortimerPlugin extends Plugin {
 		ironmanBarrageRanking = loadBundledRanking("ironman-barrage.json");
 		repeatInfoBox = new RepeatInfoBox(itemManager.getImage(ItemID.SKILLCAPE_SLAYER), this);
 		repeatInfoBoxActive = false;
-		braceletInfoBox = new BraceletInfoBox(itemManager.getImage(ItemID.EXPEDITIOUS_BRACELET), this);
-		braceletInfoBox.setTooltip("Recommended: Expeditious bracelet");
 		braceletInfoBoxActive = false;
 		braceletInfoBoxItemId = ItemID.EXPEDITIOUS_BRACELET;
+		braceletInfoBox = createBraceletInfoBox(braceletInfoBoxItemId);
 		slayerTaskActivityObserved = false;
 		braceletTaskActivityObserved = false;
 		loadingTransition = false;
+		taskAssignmentActivitySuppressed = true;
+		taskStateRefreshPending = false;
+		taskStateRefreshQuietTicks = 0;
+		taskChoiceStateAtOpen = null;
+		pendingTaskChoiceState = null;
+		lastObservedSlayerTaskState = null;
+		lastObservedSlayerTaskIdentity = null;
+		pendingTaskChoiceTicks = 0;
 		lastBraceletTaskActivityNanos = 0;
 		slayerTaskStateInitialized = false;
 		lastMortimerTaskKey = null;
@@ -175,6 +189,14 @@ public class EfficientMortimerPlugin extends Plugin {
 		lastBraceletTaskActivityNanos = 0;
 		slayerTaskStateInitialized = false;
 		lastMortimerTaskKey = null;
+		taskAssignmentActivitySuppressed = true;
+		taskStateRefreshPending = false;
+		taskStateRefreshQuietTicks = 0;
+		taskChoiceStateAtOpen = null;
+		pendingTaskChoiceState = null;
+		lastObservedSlayerTaskState = null;
+		lastObservedSlayerTaskIdentity = null;
+		pendingTaskChoiceTicks = 0;
 		clientThread.invoke(() -> {
 			if (running) {
 				reloadCustomList();
@@ -186,6 +208,13 @@ public class EfficientMortimerPlugin extends Plugin {
 
 	@Subscribe
 	public void onWidgetLoaded(WidgetLoaded event) {
+		if (event.getGroupId() == InterfaceID.SLAYER_TASK_CHOICE) {
+			taskChoiceStateAtOpen = currentSlayerTaskState();
+			pendingTaskChoiceState = null;
+			lastObservedSlayerTaskState = null;
+			lastObservedSlayerTaskIdentity = null;
+			pendingTaskChoiceTicks = 0;
+		}
 		if (event.getGroupId() == InterfaceID.SLAYER_TASK_CHOICE || event.getGroupId() == InterfaceID.BANKMAIN) {
 			refreshNeeded = true;
 		}
@@ -195,6 +224,11 @@ public class EfficientMortimerPlugin extends Plugin {
 	public void onWidgetClosed(WidgetClosed event) {
 		if (event.getGroupId() == InterfaceID.SLAYER_TASK_CHOICE) {
 			displayState = null;
+			if (taskChoiceStateAtOpen != null) {
+				pendingTaskChoiceState = taskChoiceStateAtOpen;
+				pendingTaskChoiceTicks = 5;
+				taskChoiceStateAtOpen = null;
+			}
 		}
 		if (event.getGroupId() == InterfaceID.SLAYER_TASK_CHOICE || event.getGroupId() == InterfaceID.BANKMAIN) {
 			refreshNeeded = true;
@@ -203,6 +237,25 @@ public class EfficientMortimerPlugin extends Plugin {
 
 	@Subscribe
 	public void onVarbitChanged(VarbitChanged event) {
+		int varbitId = event.getVarbitId();
+		int varpId = event.getVarpId();
+		if (varpId == VarPlayerID.SLAYER_COUNT
+				|| varpId == VarPlayerID.SLAYER_COUNT_ORIGINAL
+				|| varpId == VarPlayerID.SLAYER_TARGET
+				|| varpId == VarPlayerID.SLAYER_STORED_VARP
+				|| varbitId == VarbitID.SLAYER_MASTER
+				|| varbitId == VarbitID.SLAYER_MASTER_STORED
+				|| varbitId == VarbitID.SLAYER_MODIFIER_ID
+				|| varbitId == VarbitID.SLAYER_MODIFIER_VALUE
+				|| varbitId == VarbitID.SLAYER_MODIFIER_NEGATIVE
+				|| varbitId == VarbitID.SLAYER_MODIFIER_ID_STORED
+				|| varbitId == VarbitID.SLAYER_MODIFIER_VALUE_STORED
+				|| varbitId == VarbitID.SLAYER_MODIFIER_NEGATIVE_STORED) {
+			// The client-tick observer coalesces active assignment identity changes.
+			refreshNeeded = true;
+			return;
+		}
+
 		if (displayState != null) {
 			refreshNeeded = true;
 		}
@@ -210,6 +263,9 @@ public class EfficientMortimerPlugin extends Plugin {
 
 	@Subscribe
 	public void onGameTick(GameTick event) {
+		if (pendingTaskChoiceTicks > 0 && --pendingTaskChoiceTicks == 0) {
+			pendingTaskChoiceState = null;
+		}
 		refreshNeeded = true;
 	}
 
@@ -265,15 +321,28 @@ public class EfficientMortimerPlugin extends Plugin {
 			lastBraceletTaskActivityNanos = 0;
 			slayerTaskStateInitialized = false;
 			lastMortimerTaskKey = null;
+			taskAssignmentActivitySuppressed = true;
+			taskStateRefreshPending = false;
+			taskStateRefreshQuietTicks = 0;
+			taskChoiceStateAtOpen = null;
+			pendingTaskChoiceState = null;
+			lastObservedSlayerTaskState = null;
+			lastObservedSlayerTaskIdentity = null;
+			pendingTaskChoiceTicks = 0;
 			setRepeatInfoBoxActive(false);
 			setBraceletRecommendations(false, false);
 			setBraceletInfoBox(-1);
 		} else if (event.getGameState() == GameState.LOGGED_IN) {
+			lastObservedSlayerTaskState = null;
+			lastObservedSlayerTaskIdentity = null;
+			taskStateRefreshPending = false;
+			taskStateRefreshQuietTicks = 0;
 			if (!loadingTransition) {
 				slayerTaskActivityObserved = false;
 				braceletTaskActivityObserved = false;
 				lastBraceletTaskActivityNanos = 0;
 				slayerTaskStateInitialized = false;
+				taskAssignmentActivitySuppressed = true;
 			}
 			loadingTransition = false;
 			setBraceletRecommendations(false, false);
@@ -291,6 +360,17 @@ public class EfficientMortimerPlugin extends Plugin {
 
 	@Subscribe
 	public void onClientTick(ClientTick event) {
+		if (!running) {
+			return;
+		}
+		observeSlayerTaskStateChanges();
+		if (taskStateRefreshPending) {
+			if (taskStateRefreshQuietTicks > 0) {
+				taskStateRefreshQuietTicks--;
+				return;
+			}
+			taskStateRefreshPending = false;
+		}
 		if (running && refreshNeeded) {
 			refreshNeeded = false;
 			refreshRecommendation();
@@ -350,16 +430,18 @@ public class EfficientMortimerPlugin extends Plugin {
 		TaskRanking ranking = getActiveRanking();
 		String taskKey = offers.currentTaskKey();
 		if (taskKey != null) {
-			if (lastMortimerTaskKey != null && !lastMortimerTaskKey.equals(taskKey)) {
+			if (!taskAssignmentActivitySuppressed
+					&& lastMortimerTaskKey != null && !lastMortimerTaskKey.equals(taskKey)) {
 				markSlayerTaskActivity();
 			}
 			lastMortimerTaskKey = taskKey;
 		}
+		observeMortimerTaskChoice();
 		observeSlayerTaskActivity();
 		boolean slayerActivity = hasSlayerActivity();
 		int slayerCount = client.getVarpValue(VarPlayerID.SLAYER_COUNT);
-		int taskSize = client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE);
-		boolean activeTask = slayerCount > 0 && taskSize > 0;
+		int taskTarget = client.getVarpValue(VarPlayerID.SLAYER_TARGET);
+		boolean activeTask = slayerCount > 0 && taskTarget > 0;
 		setRepeatInfoBoxActive(config.showRepeatInfoBox() && slayerTaskActivityObserved && !activeTask
 				&& ranking != null && ranking.isRepeatKey(lastMortimerTaskKey));
 		boolean braceletInfoBoxEnabled = config.showBraceletBankHighlights();
@@ -450,41 +532,95 @@ public class EfficientMortimerPlugin extends Plugin {
 
 	private void observeSlayerTaskActivity() {
 		int slayerCount = client.getVarpValue(VarPlayerID.SLAYER_COUNT);
-		int taskSize = client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE);
-		int taskCreature = client.getVarpValue(VarPlayer.SLAYER_TASK_CREATURE);
+		int taskOriginalCount = client.getVarpValue(VarPlayerID.SLAYER_COUNT_ORIGINAL);
+		int taskTarget = client.getVarpValue(VarPlayerID.SLAYER_TARGET);
 		int slayerMaster = client.getVarbitValue(VarbitID.SLAYER_MASTER);
 		int modifier = client.getVarbitValue(VarbitID.SLAYER_MODIFIER_ID);
-		boolean activeTask = slayerCount > 0 && taskSize > 0;
-		boolean previousActiveTask = previousSlayerCount > 0 && previousSlayerTaskSize > 0;
-		boolean taskChanged = slayerCount != previousSlayerCount
-				|| taskSize != previousSlayerTaskSize
-				|| taskCreature != previousSlayerTaskCreature
+		boolean activeTask = slayerCount > 0 && taskTarget > 0;
+		boolean previousActiveTask = previousSlayerCount > 0 && previousSlayerTaskTarget > 0;
+		boolean taskIdentityChanged = taskOriginalCount != previousSlayerTaskOriginalCount
+				|| taskTarget != previousSlayerTaskTarget
 				|| slayerMaster != previousSlayerMaster
 				|| modifier != previousSlayerModifier;
-		boolean sameTask = taskCreature == previousSlayerTaskCreature
-				&& slayerMaster == previousSlayerMaster
-				&& modifier == previousSlayerModifier
-				&& taskSize == previousSlayerTaskSize;
-		boolean taskProgressed = previousSlayerCount > slayerCount
-				&& previousSlayerCount > 0
-				&& sameTask;
+		boolean taskProgressed = previousSlayerCount > slayerCount && previousActiveTask && !taskIdentityChanged;
 		boolean taskAssigned = !previousActiveTask && activeTask;
-		boolean taskCompleted = previousActiveTask && slayerCount == 0;
+		boolean taskSwapped = previousActiveTask && activeTask && taskIdentityChanged;
+		boolean taskCompleted = previousActiveTask && !activeTask;
 
 		if (!slayerTaskStateInitialized) {
 			slayerTaskStateInitialized = true;
-		} else if (taskAssigned || (taskChanged && taskProgressed) || taskCompleted) {
+		} else if (taskProgressed) {
+			markSlayerTaskActivity();
+		} else if (!taskAssignmentActivitySuppressed && (taskAssigned || taskSwapped || taskCompleted)) {
 			markSlayerTaskActivity();
 		}
 
 		previousSlayerCount = slayerCount;
-		previousSlayerTaskSize = taskSize;
-		previousSlayerTaskCreature = taskCreature;
+		previousSlayerTaskOriginalCount = taskOriginalCount;
+		previousSlayerTaskTarget = taskTarget;
 		previousSlayerMaster = slayerMaster;
 		previousSlayerModifier = modifier;
 	}
 
+	private void observeMortimerTaskChoice() {
+		if (pendingTaskChoiceState == null) {
+			return;
+		}
+
+		if (!pendingTaskChoiceState.equals(currentSlayerTaskState())
+				&& offers.currentTaskKey() != null) {
+			markSlayerTaskActivity();
+			pendingTaskChoiceState = null;
+			pendingTaskChoiceTicks = 0;
+		}
+	}
+
+	private void observeSlayerTaskStateChanges() {
+		String currentState = currentSlayerTaskState();
+		String currentIdentity = currentSlayerTaskIdentity();
+		if (lastObservedSlayerTaskState == null) {
+			lastObservedSlayerTaskState = currentState;
+			lastObservedSlayerTaskIdentity = currentIdentity;
+			return;
+		}
+
+		if (!lastObservedSlayerTaskState.equals(currentState)) {
+			lastObservedSlayerTaskState = currentState;
+			refreshNeeded = true;
+			if (!lastObservedSlayerTaskIdentity.equals(currentIdentity)) {
+				lastObservedSlayerTaskIdentity = currentIdentity;
+				taskStateRefreshPending = true;
+				taskStateRefreshQuietTicks = 1;
+			}
+		}
+	}
+
+	private String currentSlayerTaskIdentity() {
+		return client.getVarpValue(VarPlayerID.SLAYER_COUNT_ORIGINAL) + "/"
+				+ client.getVarpValue(VarPlayerID.SLAYER_TARGET) + "/"
+				+ client.getVarbitValue(VarbitID.SLAYER_MASTER) + "/"
+				+ client.getVarbitValue(VarbitID.SLAYER_MODIFIER_ID) + "/"
+				+ client.getVarbitValue(VarbitID.SLAYER_MODIFIER_VALUE) + "/"
+				+ client.getVarbitValue(VarbitID.SLAYER_MODIFIER_NEGATIVE);
+	}
+
+	private String currentSlayerTaskState() {
+		return client.getVarpValue(VarPlayerID.SLAYER_COUNT) + "/"
+				+ client.getVarpValue(VarPlayerID.SLAYER_COUNT_ORIGINAL) + "/"
+				+ client.getVarpValue(VarPlayerID.SLAYER_TARGET) + "/"
+				+ client.getVarpValue(VarPlayerID.SLAYER_STORED_VARP) + "/"
+				+ client.getVarbitValue(VarbitID.SLAYER_MASTER) + "/"
+				+ client.getVarbitValue(VarbitID.SLAYER_MASTER_STORED) + "/"
+				+ client.getVarbitValue(VarbitID.SLAYER_MODIFIER_ID) + "/"
+				+ client.getVarbitValue(VarbitID.SLAYER_MODIFIER_VALUE) + "/"
+				+ client.getVarbitValue(VarbitID.SLAYER_MODIFIER_NEGATIVE) + "/"
+				+ client.getVarbitValue(VarbitID.SLAYER_MODIFIER_ID_STORED) + "/"
+				+ client.getVarbitValue(VarbitID.SLAYER_MODIFIER_VALUE_STORED) + "/"
+				+ client.getVarbitValue(VarbitID.SLAYER_MODIFIER_NEGATIVE_STORED);
+	}
+
 	private void markSlayerTaskActivity() {
+		taskAssignmentActivitySuppressed = false;
 		slayerTaskActivityObserved = true;
 		braceletTaskActivityObserved = true;
 		lastBraceletTaskActivityNanos = System.nanoTime();
@@ -546,17 +682,28 @@ public class EfficientMortimerPlugin extends Plugin {
 		}
 
 		if (braceletInfoBoxItemId != itemId) {
+			if (braceletInfoBoxActive) {
+				infoBoxManager.removeInfoBox(braceletInfoBox);
+			}
 			braceletInfoBoxItemId = itemId;
-			braceletInfoBox.setBraceletImage(itemManager.getImage(itemId));
-			braceletInfoBox.setTooltip(itemId == ItemID.EXPEDITIOUS_BRACELET
-					? "Recommended: Expeditious bracelet"
-					: "Recommended: Bracelet of slaughter");
+			braceletInfoBox = createBraceletInfoBox(itemId);
+			infoBoxManager.addInfoBox(braceletInfoBox);
+			braceletInfoBoxActive = true;
+			return;
 		}
 
 		if (!braceletInfoBoxActive) {
 			infoBoxManager.addInfoBox(braceletInfoBox);
 			braceletInfoBoxActive = true;
 		}
+	}
+
+	private BraceletInfoBox createBraceletInfoBox(int itemId) {
+		BraceletInfoBox infoBox = new BraceletInfoBox(itemManager.getImage(itemId), this);
+		infoBox.setTooltip(itemId == ItemID.EXPEDITIOUS_BRACELET
+				? "Recommended: Expeditious bracelet"
+				: "Recommended: Bracelet of slaughter");
+		return infoBox;
 	}
 
 	static final class DisplayState {

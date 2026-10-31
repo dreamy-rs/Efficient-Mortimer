@@ -6,7 +6,6 @@ import java.util.Collections;
 import java.util.List;
 import javax.inject.Inject;
 import net.runelite.api.Client;
-import net.runelite.api.VarPlayer;
 import net.runelite.api.gameval.DBTableID;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.VarbitID;
@@ -146,12 +145,12 @@ final class MortimerOffers
 	{
 		if (client.getVarbitValue(VarbitID.SLAYER_MASTER) != MORTIMER_MASTER_ID
 			|| client.getVarpValue(VarPlayerID.SLAYER_COUNT) <= 0
-			|| client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE) <= 0)
+			|| client.getVarpValue(VarPlayerID.SLAYER_TARGET) <= 0)
 		{
 			return null;
 		}
 
-		String taskId = TaskCatalog.taskIdForName(taskName(client.getVarpValue(VarPlayer.SLAYER_TASK_CREATURE)));
+		String taskId = TaskCatalog.taskIdForName(taskName(client.getVarpValue(VarPlayerID.SLAYER_TARGET)));
 		String modifier = modifierId(client.getVarbitValue(VarbitID.SLAYER_MODIFIER_ID));
 		return taskId == null || modifier == null ? null : taskId + Character.toString('/') + modifier;
 	}
