@@ -10,6 +10,7 @@ import net.runelite.api.VarPlayer;
 import net.runelite.api.gameval.DBTableID;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.VarbitID;
+import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetType;
 import net.runelite.client.util.Text;
@@ -144,6 +145,7 @@ final class MortimerOffers
 	String currentTaskKey()
 	{
 		if (client.getVarbitValue(VarbitID.SLAYER_MASTER) != MORTIMER_MASTER_ID
+			|| client.getVarpValue(VarPlayerID.SLAYER_COUNT) <= 0
 			|| client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE) <= 0)
 		{
 			return null;

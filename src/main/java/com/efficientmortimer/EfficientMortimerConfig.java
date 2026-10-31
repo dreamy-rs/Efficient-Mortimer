@@ -17,7 +17,7 @@ public interface EfficientMortimerConfig extends Config {
 		return ListMode.MAIN;
 	}
 
-	@ConfigItem(keyName = "showBraceletBankHighlights", name = "Bracelet bank highlights", description = "Highlight Expeditious/Slaughter bracelets in bank when recommended", position = 0)
+	@ConfigItem(keyName = "showBraceletBankHighlights", name = "Recommended bracelet infobox", description = "Show the recommended bracelet infobox near a bank or Mortimer", position = 0)
 	default boolean showBraceletBankHighlights() {
 		return true;
 	}

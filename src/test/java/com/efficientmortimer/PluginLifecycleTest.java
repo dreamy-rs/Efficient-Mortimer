@@ -3,6 +3,7 @@ package com.efficientmortimer;
 import com.google.gson.Gson;
 import com.google.inject.Guice;
 import java.util.ArrayDeque;
+import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.util.Collections;
 import java.util.HashMap;
@@ -10,10 +11,15 @@ import java.util.Map;
 import java.util.Queue;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
+import net.runelite.api.IndexedObjectSet;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.MenuAction;
+import net.runelite.api.NPC;
+import net.runelite.api.Player;
 import net.runelite.api.VarPlayer;
+import net.runelite.api.WorldView;
+import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
@@ -35,6 +41,7 @@ import net.runelite.client.events.ProfileChanged;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.ui.overlay.OverlayManager;
+import net.runelite.client.ui.overlay.infobox.InfoBox;
 import net.runelite.client.ui.overlay.infobox.InfoBoxManager;
 import net.runelite.client.util.AsyncBufferedImage;
 import org.junit.After;
@@ -50,8 +57,10 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -108,6 +117,8 @@ public class PluginLifecycleTest
 
 		when(client.getGameState()).thenReturn(GameState.LOGGED_IN);
 		when(client.getVarbitValue(anyInt())).thenAnswer(call -> variables.getOrDefault(call.getArgument(0), 0));
+		when(client.getVarpValue(VarPlayerID.SLAYER_COUNT))
+			.thenAnswer(call -> variables.getOrDefault(call.getArgument(0), 0));
 		variables.put(VarbitID.SLAYER_CHOOSE_ROLLED_MASTER, 10);
 		variables.put(VarbitID.SLAYER_POINTS, 100);
 		Widget content = mock(Widget.class);
@@ -314,6 +325,50 @@ public class PluginLifecycleTest
 	}
 
 	@Test
+	public void swappingMortimerTaskImmediatelyUpdatesBraceletInfobox()
+	{
+		settings().put("customList", exportWithBraceletConditions());
+		Color expeditiousColor = new Color(220, 30, 30);
+		Color slaughterColor = new Color(20, 40, 220);
+		when(itemManager.getImage(ItemID.EXPEDITIOUS_BRACELET)).thenReturn(asyncImageWithPixel(expeditiousColor));
+		when(itemManager.getImage(ItemID.BRACELET_OF_SLAUGHTER)).thenReturn(asyncImageWithPixel(slaughterColor));
+		setAtMortimer();
+		assertTrue(BraceletLocation.isAtMortimer(client));
+		start();
+
+		setMortimerSlayerTask(20);
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+
+		assertEquals(20, client.getVarpValue(VarPlayerID.SLAYER_COUNT));
+		assertEquals("abyssal-demon/points", new MortimerOffers(client).currentTaskKey());
+		assertTrue(plugin.isExpeditiousHighlightActive());
+		org.mockito.ArgumentCaptor<InfoBox> infoBoxCaptor = org.mockito.ArgumentCaptor.forClass(InfoBox.class);
+		verify(infoBoxManager).addInfoBox(infoBoxCaptor.capture());
+		BraceletInfoBox braceletInfoBox = (BraceletInfoBox) infoBoxCaptor.getValue();
+		assertEquals(expeditiousColor.getRGB(), braceletInfoBox.getImage().getRGB(0, 0));
+
+		when(client.getVarpValue(VarPlayer.SLAYER_TASK_CREATURE)).thenReturn(22);
+		plugin.onGameTick(new GameTick());
+		plugin.onClientTick(new ClientTick());
+
+		assertTrue(plugin.isSlaughterHighlightActive());
+		assertEquals(slaughterColor.getRGB(), braceletInfoBox.getImage().getRGB(0, 0));
+		verify(infoBoxManager, times(1)).addInfoBox(braceletInfoBox);
+	}
+
+	@Test
+	public void currentTaskKeyRequiresMortimerAsTheSlayerMaster()
+	{
+		setMortimerSlayerTask(20);
+		MortimerOffers offers = new MortimerOffers(client);
+		assertEquals("abyssal-demon/points", offers.currentTaskKey());
+
+		variables.put(VarbitID.SLAYER_MASTER, 9);
+		assertNull(offers.currentTaskKey());
+	}
+
+	@Test
 	public void repeatAndBraceletFeaturesRequireSlayerActivityAndRespectRepeatToggle()
 	{
 		settings().put("customList", exportWithRepeatAndBraceletConditions());
@@ -328,7 +383,7 @@ public class PluginLifecycleTest
 		assertEquals("abyssal-demon/points", new MortimerOffers(client).currentTaskKey());
 		plugin.onGameTick(new GameTick());
 		plugin.onClientTick(new ClientTick());
-		assertTrue(plugin.isRepeatInfoBoxActive());
+		assertFalse(plugin.isRepeatInfoBoxActive());
 		assertTrue(plugin.isExpeditiousHighlightActive());
 
 		when(config.showRepeatInfoBox()).thenReturn(false);
@@ -368,11 +423,11 @@ public class PluginLifecycleTest
 		plugin.onGameTick(new GameTick());
 		plugin.onClientTick(new ClientTick());
 
-		assertTrue(plugin.isRepeatInfoBoxActive());
+		assertFalse(plugin.isRepeatInfoBoxActive());
 		variables.put(VarbitID.SLAYER_MASTER, 0);
 		plugin.onGameTick(new GameTick());
 		plugin.onClientTick(new ClientTick());
-		assertTrue(plugin.isRepeatInfoBoxActive());
+		assertFalse(plugin.isRepeatInfoBoxActive());
 		when(client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE)).thenReturn(0);
 		plugin.onGameTick(new GameTick());
 		plugin.onClientTick(new ClientTick());
@@ -380,7 +435,7 @@ public class PluginLifecycleTest
 		when(client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE)).thenReturn(19);
 		plugin.onGameTick(new GameTick());
 		plugin.onClientTick(new ClientTick());
-		assertTrue(plugin.isRepeatInfoBoxActive());
+		assertFalse(plugin.isRepeatInfoBoxActive());
 
 		variables.put(VarPlayerID.SLAYER_COUNT, 0);
 		when(client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE)).thenReturn(0);
@@ -418,7 +473,7 @@ public class PluginLifecycleTest
 		plugin.onMenuOptionClicked(event);
 		plugin.onClientTick(new ClientTick());
 
-		assertTrue(plugin.isRepeatInfoBoxActive());
+		assertFalse(plugin.isRepeatInfoBoxActive());
 	}
 
 	@Test
@@ -447,8 +502,8 @@ public class PluginLifecycleTest
 		start();
 		plugin.onGameTick(new GameTick());
 		plugin.onClientTick(new ClientTick());
-		variables.put(VarPlayerID.SLAYER_COUNT, 19);
-		when(client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE)).thenReturn(19);
+		variables.put(VarPlayerID.SLAYER_COUNT, 0);
+		when(client.getVarpValue(VarPlayer.SLAYER_TASK_SIZE)).thenReturn(0);
 		plugin.onGameTick(new GameTick());
 		plugin.onClientTick(new ClientTick());
 		assertTrue(plugin.isRepeatInfoBoxActive());
@@ -516,6 +571,30 @@ public class PluginLifecycleTest
 		assertEquals(expected, plugin.getDisplayState().recommendation.getAction());
 	}
 
+	private void setAtMortimer()
+	{
+		WorldPoint location = new WorldPoint(3200, 3200, 0);
+		Player player = mock(Player.class);
+		NPC mortimer = mock(NPC.class);
+		WorldView worldView = mock(WorldView.class);
+		@SuppressWarnings("rawtypes")
+		IndexedObjectSet npcs = mock(IndexedObjectSet.class);
+		when(client.getLocalPlayer()).thenReturn(player);
+		when(player.getWorldLocation()).thenReturn(location);
+		when(client.getTopLevelWorldView()).thenReturn(worldView);
+		doReturn(npcs).when(worldView).npcs();
+		doAnswer(call -> Collections.singleton(mortimer).iterator()).when(npcs).iterator();
+		when(mortimer.getName()).thenReturn("Mortimer");
+		when(mortimer.getWorldLocation()).thenReturn(location);
+	}
+
+	private AsyncBufferedImage asyncImageWithPixel(Color color)
+	{
+		AsyncBufferedImage image = new AsyncBufferedImage(clientThread, 36, 32, BufferedImage.TYPE_INT_ARGB);
+		image.setRGB(0, 0, color.getRGB());
+		return image;
+	}
+
 	private void setMortimerSlayerTask(int amount)
 	{
 		variables.put(VarPlayerID.SLAYER_COUNT, amount);
@@ -566,6 +645,14 @@ public class PluginLifecycleTest
 		return export(1).replace("\"version\":1",
 			"\"version\":2,\"repeat\":[\"abyssal-demon/points\"],"
 				+ "\"expeditious\":[\"abyssal-demon/points\"],\"slaughter\":[]");
+	}
+
+	private static String exportWithBraceletConditions()
+	{
+		return "{\"type\":\"efficient-mortimer\",\"version\":2,\"acceptedCount\":1,"
+			+ "\"ranking\":[\"abyssal-demon/points\",\"gargoyle/points\"],"
+			+ "\"expeditious\":[\"abyssal-demon/points\"],"
+			+ "\"slaughter\":[\"gargoyle/points\"]}";
 	}
 }
 
