@@ -11,22 +11,19 @@ import net.runelite.client.util.AsyncBufferedImage;
 
 final class BraceletInfoBox extends InfoBox
 {
-	BraceletInfoBox(BufferedImage image, EfficientMortimerPlugin plugin)
+	final int itemId;
+
+	BraceletInfoBox(int itemId, BufferedImage image, EfficientMortimerPlugin plugin)
 	{
 		super(image, plugin);
-		setBraceletImage(image);
-	}
-
-	void setBraceletImage(BufferedImage image)
-	{
+		this.itemId = itemId;
 		if (image instanceof AsyncBufferedImage)
 		{
-			super.setImage(image);
-			((AsyncBufferedImage) image).onLoaded(() -> super.setImage(withCheckmark(image)));
+			((AsyncBufferedImage) image).onLoaded(() -> setImage(withCheckmark(image)));
 		}
 		else
 		{
-			super.setImage(withCheckmark(image));
+			setImage(withCheckmark(image));
 		}
 	}
 
@@ -39,11 +36,6 @@ final class BraceletInfoBox extends InfoBox
 
 		int width = source.getWidth();
 		int height = source.getHeight();
-		BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
-		Graphics2D graphics = image.createGraphics();
-		graphics.drawImage(source, 0, 0, null);
-		graphics.dispose();
-
 		int size = Math.max(10, Math.min(14, Math.min(width, height) / 2));
 		int x = width - size - 1;
 		int y = height - size - 1;
@@ -53,17 +45,17 @@ final class BraceletInfoBox extends InfoBox
 		check.lineTo(x + size * 0.38, y + size * 0.77);
 		check.lineTo(x + size * 0.88, y + size * 0.20);
 
-		// Render only the checkmark at high resolution, then average pixel coverage for smooth edges.
+		// Draw the checkmark at high resolution, then average pixel alpha for smooth edges.
 		int scale = 16;
-		BufferedImage highResolutionCheckmark = new BufferedImage(width * scale, height * scale, BufferedImage.TYPE_INT_ARGB);
-		Graphics2D checkGraphics = highResolutionCheckmark.createGraphics();
-		checkGraphics.scale(scale, scale);
-		checkGraphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-		checkGraphics.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
-		checkGraphics.setColor(new Color(0, 200, 0));
-		checkGraphics.setStroke(new BasicStroke(size / 3.2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-		checkGraphics.draw(check);
-		checkGraphics.dispose();
+		BufferedImage highResolution = new BufferedImage(width * scale, height * scale, BufferedImage.TYPE_INT_ARGB);
+		Graphics2D highResolutionGraphics = highResolution.createGraphics();
+		highResolutionGraphics.scale(scale, scale);
+		highResolutionGraphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+		highResolutionGraphics.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+		highResolutionGraphics.setColor(new Color(0, 200, 0));
+		highResolutionGraphics.setStroke(new BasicStroke(size / 3.2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+		highResolutionGraphics.draw(check);
+		highResolutionGraphics.dispose();
 
 		BufferedImage checkmark = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
 		int samplesPerPixel = scale * scale;
@@ -76,8 +68,7 @@ final class BraceletInfoBox extends InfoBox
 				{
 					for (int sampleX = 0; sampleX < scale; sampleX++)
 					{
-						int highResolutionPixel = highResolutionCheckmark.getRGB(pixelX * scale + sampleX, pixelY * scale + sampleY);
-						alphaSum += highResolutionPixel >>> 24;
+						alphaSum += highResolution.getRGB(pixelX * scale + sampleX, pixelY * scale + sampleY) >>> 24;
 					}
 				}
 
@@ -86,7 +77,9 @@ final class BraceletInfoBox extends InfoBox
 			}
 		}
 
-		graphics = image.createGraphics();
+		BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+		Graphics2D graphics = image.createGraphics();
+		graphics.drawImage(source, 0, 0, null);
 		graphics.drawImage(checkmark, 0, 0, null);
 		graphics.dispose();
 		return image;

@@ -74,10 +74,7 @@ public class EfficientMortimerPlugin extends Plugin {
 	private RepeatInfoBox repeatInfoBox;
 	private BraceletInfoBox braceletInfoBox;
 	private boolean repeatInfoBoxActive;
-	private boolean braceletInfoBoxActive;
-	private int braceletInfoBoxItemId;
 	private boolean slayerTaskActivityObserved;
-	private boolean braceletTaskActivityObserved;
 	private boolean loadingTransition;
 	private boolean taskAssignmentActivitySuppressed;
 	private boolean taskStateRefreshPending;
@@ -106,11 +103,7 @@ public class EfficientMortimerPlugin extends Plugin {
 		ironmanBarrageRanking = loadBundledRanking("ironman-barrage.json");
 		repeatInfoBox = new RepeatInfoBox(itemManager.getImage(ItemID.SKILLCAPE_SLAYER), this);
 		repeatInfoBoxActive = false;
-		braceletInfoBoxActive = false;
-		braceletInfoBoxItemId = ItemID.EXPEDITIOUS_BRACELET;
-		braceletInfoBox = createBraceletInfoBox(braceletInfoBoxItemId);
 		slayerTaskActivityObserved = false;
-		braceletTaskActivityObserved = false;
 		loadingTransition = false;
 		taskAssignmentActivitySuppressed = true;
 		taskStateRefreshPending = false;
@@ -140,10 +133,8 @@ public class EfficientMortimerPlugin extends Plugin {
 	protected void shutDown() {
 		running = false;
 		setRepeatInfoBoxActive(false);
-		setBraceletRecommendations(false, false);
-		setBraceletInfoBox(-1);
+		clearBraceletRecommendations();
 		repeatInfoBox = null;
-		braceletInfoBox = null;
 		overlayManager.remove(overlay);
 		displayState = null;
 		mainRanking = null;
@@ -185,7 +176,6 @@ public class EfficientMortimerPlugin extends Plugin {
 	public void onProfileChanged(ProfileChanged event) {
 		displayState = null;
 		slayerTaskActivityObserved = false;
-		braceletTaskActivityObserved = false;
 		lastBraceletTaskActivityNanos = 0;
 		slayerTaskStateInitialized = false;
 		lastMortimerTaskKey = null;
@@ -314,10 +304,10 @@ public class EfficientMortimerPlugin extends Plugin {
 	@Subscribe
 	public void onGameStateChanged(GameStateChanged event) {
 		displayState = null;
+		clearBraceletRecommendations();
 		if (isLoggedOutState(event.getGameState())) {
 			loadingTransition = false;
 			slayerTaskActivityObserved = false;
-			braceletTaskActivityObserved = false;
 			lastBraceletTaskActivityNanos = 0;
 			slayerTaskStateInitialized = false;
 			lastMortimerTaskKey = null;
@@ -330,8 +320,6 @@ public class EfficientMortimerPlugin extends Plugin {
 			lastObservedSlayerTaskIdentity = null;
 			pendingTaskChoiceTicks = 0;
 			setRepeatInfoBoxActive(false);
-			setBraceletRecommendations(false, false);
-			setBraceletInfoBox(-1);
 		} else if (event.getGameState() == GameState.LOGGED_IN) {
 			lastObservedSlayerTaskState = null;
 			lastObservedSlayerTaskIdentity = null;
@@ -339,21 +327,16 @@ public class EfficientMortimerPlugin extends Plugin {
 			taskStateRefreshQuietTicks = 0;
 			if (!loadingTransition) {
 				slayerTaskActivityObserved = false;
-				braceletTaskActivityObserved = false;
 				lastBraceletTaskActivityNanos = 0;
 				slayerTaskStateInitialized = false;
 				taskAssignmentActivitySuppressed = true;
 			}
 			loadingTransition = false;
-			setBraceletRecommendations(false, false);
-			setBraceletInfoBox(-1);
 		} else {
 			loadingTransition = event.getGameState() == GameState.LOADING;
 			if (event.getGameState() != GameState.LOADING) {
 				setRepeatInfoBoxActive(false);
 			}
-			setBraceletRecommendations(false, false);
-			setBraceletInfoBox(-1);
 		}
 		refreshNeeded = event.getGameState() == GameState.LOGGED_IN;
 	}
@@ -412,8 +395,7 @@ public class EfficientMortimerPlugin extends Plugin {
 		GameState gameState = client.getGameState();
 		if (configManager.getProfile().getId() != profileId) {
 			setRepeatInfoBoxActive(false);
-			setBraceletRecommendations(false, false);
-			setBraceletInfoBox(-1);
+			clearBraceletRecommendations();
 			displayState = null;
 			return;
 		}
@@ -421,8 +403,7 @@ public class EfficientMortimerPlugin extends Plugin {
 			if (isLoggedOutState(gameState)) {
 				setRepeatInfoBoxActive(false);
 			}
-			setBraceletRecommendations(false, false);
-			setBraceletInfoBox(-1);
+			clearBraceletRecommendations();
 			displayState = null;
 			return;
 		}
@@ -446,11 +427,10 @@ public class EfficientMortimerPlugin extends Plugin {
 				&& ranking != null && ranking.isRepeatKey(lastMortimerTaskKey));
 		boolean braceletInfoBoxEnabled = config.showBraceletBankHighlights();
 		boolean braceletTaskActivity = isBraceletTaskActivityActive();
-		boolean expeditiousRecommended = braceletInfoBoxEnabled && slayerActivity && ranking != null
+		expeditiousHighlightActive = braceletInfoBoxEnabled && slayerActivity && ranking != null
 				&& ranking.isExpeditiousKey(taskKey);
-		boolean slaughterRecommended = braceletInfoBoxEnabled && slayerActivity && ranking != null
+		slaughterHighlightActive = braceletInfoBoxEnabled && slayerActivity && ranking != null
 				&& ranking.isSlaughterKey(taskKey);
-		setBraceletRecommendations(expeditiousRecommended, slaughterRecommended);
 
 		boolean atMortimer = BraceletLocation.isAtMortimer(client);
 		boolean inBraceletLocation = atMortimer || BraceletLocation.isAtBank(client);
@@ -464,15 +444,15 @@ public class EfficientMortimerPlugin extends Plugin {
 					? snapshot.getKeys().get(offeredTask.getSlot())
 					: null;
 		}
-		int recommendedBraceletItemId = -1;
-		if (braceletInfoBoxEnabled && braceletTaskActivity && inBraceletLocation && ranking != null) {
-			if (ranking.isExpeditiousKey(braceletTaskKey)) {
-				recommendedBraceletItemId = ItemID.EXPEDITIOUS_BRACELET;
-			} else if (ranking.isSlaughterKey(braceletTaskKey)) {
-				recommendedBraceletItemId = ItemID.BRACELET_OF_SLAUGHTER;
-			}
+		boolean braceletVisible = braceletInfoBoxEnabled && braceletTaskActivity && inBraceletLocation
+				&& ranking != null;
+		if (braceletVisible && ranking.isExpeditiousKey(braceletTaskKey)) {
+			showBraceletInfoBox(ItemID.EXPEDITIOUS_BRACELET);
+		} else if (braceletVisible && ranking.isSlaughterKey(braceletTaskKey)) {
+			showBraceletInfoBox(ItemID.BRACELET_OF_SLAUGHTER);
+		} else {
+			hideBraceletInfoBox();
 		}
-		setBraceletInfoBox(recommendedBraceletItemId);
 		if (ranking == null) {
 			displayState = null;
 			return;
@@ -622,22 +602,12 @@ public class EfficientMortimerPlugin extends Plugin {
 	private void markSlayerTaskActivity() {
 		taskAssignmentActivitySuppressed = false;
 		slayerTaskActivityObserved = true;
-		braceletTaskActivityObserved = true;
 		lastBraceletTaskActivityNanos = System.nanoTime();
 	}
 
 	private boolean isBraceletTaskActivityActive() {
-		if (!braceletTaskActivityObserved) {
-			return false;
-		}
-
-		if (System.nanoTime() - lastBraceletTaskActivityNanos >= BRACELET_INFOBOX_ACTIVITY_TIMEOUT_NANOS) {
-			braceletTaskActivityObserved = false;
-			lastBraceletTaskActivityNanos = 0;
-			return false;
-		}
-
-		return true;
+		return lastBraceletTaskActivityNanos != 0
+				&& System.nanoTime() - lastBraceletTaskActivityNanos < BRACELET_INFOBOX_ACTIVITY_TIMEOUT_NANOS;
 	}
 
 	private boolean isLoggedOutState(GameState gameState) {
@@ -663,47 +633,31 @@ public class EfficientMortimerPlugin extends Plugin {
 		}
 	}
 
-	private void setBraceletRecommendations(boolean expeditious, boolean slaughter) {
-		expeditiousHighlightActive = expeditious;
-		slaughterHighlightActive = slaughter;
+	private void clearBraceletRecommendations() {
+		expeditiousHighlightActive = false;
+		slaughterHighlightActive = false;
+		hideBraceletInfoBox();
 	}
 
-	private void setBraceletInfoBox(int itemId) {
-		if (braceletInfoBox == null) {
+	private void showBraceletInfoBox(int itemId) {
+		if (braceletInfoBox != null && braceletInfoBox.itemId == itemId) {
 			return;
 		}
 
-		if (itemId != ItemID.EXPEDITIOUS_BRACELET && itemId != ItemID.BRACELET_OF_SLAUGHTER) {
-			if (braceletInfoBoxActive) {
-				infoBoxManager.removeInfoBox(braceletInfoBox);
-				braceletInfoBoxActive = false;
-			}
-			return;
-		}
-
-		if (braceletInfoBoxItemId != itemId) {
-			if (braceletInfoBoxActive) {
-				infoBoxManager.removeInfoBox(braceletInfoBox);
-			}
-			braceletInfoBoxItemId = itemId;
-			braceletInfoBox = createBraceletInfoBox(itemId);
-			infoBoxManager.addInfoBox(braceletInfoBox);
-			braceletInfoBoxActive = true;
-			return;
-		}
-
-		if (!braceletInfoBoxActive) {
-			infoBoxManager.addInfoBox(braceletInfoBox);
-			braceletInfoBoxActive = true;
-		}
-	}
-
-	private BraceletInfoBox createBraceletInfoBox(int itemId) {
-		BraceletInfoBox infoBox = new BraceletInfoBox(itemManager.getImage(itemId), this);
-		infoBox.setTooltip(itemId == ItemID.EXPEDITIOUS_BRACELET
+		hideBraceletInfoBox();
+		String tooltip = itemId == ItemID.EXPEDITIOUS_BRACELET
 				? "Recommended: Expeditious bracelet"
-				: "Recommended: Bracelet of slaughter");
-		return infoBox;
+				: "Recommended: Bracelet of slaughter";
+		braceletInfoBox = new BraceletInfoBox(itemId, itemManager.getImage(itemId), this);
+		braceletInfoBox.setTooltip(tooltip);
+		infoBoxManager.addInfoBox(braceletInfoBox);
+	}
+
+	private void hideBraceletInfoBox() {
+		if (braceletInfoBox != null) {
+			infoBoxManager.removeInfoBox(braceletInfoBox);
+			braceletInfoBox = null;
+		}
 	}
 
 	static final class DisplayState {
